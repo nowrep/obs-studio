@@ -55,6 +55,19 @@
 #define info(format, ...) do_log(LOG_INFO, format, ##__VA_ARGS__)
 #define debug(format, ...) do_log(LOG_DEBUG, format, ##__VA_ARGS__)
 
+typedef struct {
+	union {
+		unsigned int quality;
+		struct {
+			unsigned int valid_setting : 1;
+			unsigned int preset_mode : 2;
+			unsigned int pre_encode_mode : 1;
+			unsigned int vbaq_mode : 1;
+			unsigned int reservered : 27;
+		};
+	};
+} vlVaQualityBits;
+
 enum codec_type {
 	CODEC_H264,
 	CODEC_HEVC,
@@ -235,6 +248,52 @@ static const rc_mode_t *get_rc_mode(const char *name)
 	return rc_mode ? rc_mode : RC_MODES;
 }
 
+static inline int vaapi_ff_profile(int profile, VADisplay va_dpy,
+				   const char *device)
+{
+	switch (profile) {
+	case AV_PROFILE_H264_CONSTRAINED_BASELINE:
+		if (!vaapi_display_h264_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileH264ConstrainedBaseline;
+		break;
+	case AV_PROFILE_H264_MAIN:
+		if (!vaapi_display_h264_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileH264Main;
+		break;
+	case AV_PROFILE_H264_HIGH:
+		if (!vaapi_display_h264_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileH264High;
+		break;
+	case AV_PROFILE_AV1_MAIN:
+		if (!vaapi_display_av1_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileAV1Profile0;
+		break;
+#ifdef ENABLE_HEVC
+	case AV_PROFILE_HEVC_MAIN:
+		if (!vaapi_display_hevc_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileHEVCMain;
+		break;
+	case AV_PROFILE_HEVC_MAIN_10:
+		if (!vaapi_display_hevc_supported(va_dpy, device))
+			goto fail;
+		profile = VAProfileHEVCMain10;
+		break;
+#endif
+	default:
+		goto fail;
+	}
+
+	return profile;
+
+fail:
+	return VAProfileNone;
+}
+
 static bool vaapi_update(void *data, obs_data_t *settings)
 {
 	struct vaapi_encoder *enc = data;
@@ -255,6 +314,8 @@ static bool vaapi_update(void *data, obs_data_t *settings)
 	int bitrate = rc_mode->bitrate ? (int)obs_data_get_int(settings, "bitrate") : 0;
 	int maxrate = rc_mode->maxrate ? (int)obs_data_get_int(settings, "maxrate") : 0;
 	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
+	const char *preset = obs_data_get_string(settings, "preset");
+	bool preencode = obs_data_get_bool(settings, "preencode");
 
 	/* For Rate Control which allows maxrate, FFMPEG will give
 	 * an error if maxrate > bitrate. To prevent that set maxrate
@@ -341,6 +402,28 @@ static bool vaapi_update(void *data, obs_data_t *settings)
 	}
 
 	enc->height = enc->context->height;
+
+	int drm_fd = -1;
+	VADisplay va_dpy = vaapi_open_device(&drm_fd, device, "vaapi_update");
+	if (va_dpy &&
+	    vaapi_quality_preset_supported(
+		    vaapi_ff_profile(profile, va_dpy, device), va_dpy)) {
+		vlVaQualityBits q = {0};
+		if (strcmp(preset, "speed") == 0) {
+			q.preset_mode = 0;
+		} else if (strcmp(preset, "balanced") == 0) {
+			q.preset_mode = 1;
+		} else if (strcmp(preset, "quality") == 0) {
+			q.preset_mode = 2;
+		} else {
+			q.preset_mode = 3;
+		}
+		q.pre_encode_mode = preencode ? 1 : 0;
+		enc->context->compression_level = q.quality;
+	}
+
+	if (va_dpy)
+		vaapi_close_device(&drm_fd, va_dpy);
 
 	const char *ffmpeg_opts = obs_data_get_string(settings, "ffmpeg_opts");
 	struct obs_options opts = obs_parse_options(ffmpeg_opts);
@@ -905,6 +988,8 @@ static void vaapi_defaults_internal(obs_data_t *settings, enum codec_type codec)
 	obs_data_set_default_int(settings, "bf", 0);
 	obs_data_set_default_int(settings, "qp", 20);
 	obs_data_set_default_int(settings, "maxrate", 0);
+	obs_data_set_default_string(settings, "preset", "quality");
+	obs_data_set_default_bool(settings, "preencode", false);
 
 	int drm_fd = -1;
 	VADisplay va_dpy = vaapi_open_device(&drm_fd, device, "vaapi_defaults");
@@ -952,40 +1037,9 @@ static bool vaapi_device_modified(obs_properties_t *ppts, obs_property_t *p, obs
 	if (!va_dpy)
 		goto fail;
 
-	switch (profile) {
-	case AV_PROFILE_H264_CONSTRAINED_BASELINE:
-		if (!vaapi_display_h264_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileH264ConstrainedBaseline;
-		break;
-	case AV_PROFILE_H264_MAIN:
-		if (!vaapi_display_h264_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileH264Main;
-		break;
-	case AV_PROFILE_H264_HIGH:
-		if (!vaapi_display_h264_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileH264High;
-		break;
-	case AV_PROFILE_AV1_MAIN:
-		if (!vaapi_display_av1_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileAV1Profile0;
-		break;
-#ifdef ENABLE_HEVC
-	case AV_PROFILE_HEVC_MAIN:
-		if (!vaapi_display_hevc_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileHEVCMain;
-		break;
-	case AV_PROFILE_HEVC_MAIN_10:
-		if (!vaapi_display_hevc_supported(va_dpy, device))
-			goto fail;
-		profile = VAProfileHEVCMain10;
-		break;
-#endif
-	}
+	profile = vaapi_ff_profile(profile, va_dpy, device);
+	if (profile == VAProfileNone)
+		goto fail;
 
 	if (vaapi_device_rc_supported(profile, va_dpy, VA_RC_CBR, device))
 		obs_property_list_add_string(rc_p, "CBR", "CBR");
@@ -1000,6 +1054,12 @@ static bool vaapi_device_modified(obs_properties_t *ppts, obs_property_t *p, obs
 		obs_property_list_add_string(rc_p, "CQP", "CQP");
 
 	set_visible(ppts, "bf", vaapi_device_bframe_supported(profile, va_dpy));
+
+	set_visible(ppts, "preset",
+		    vaapi_quality_preset_supported(profile, va_dpy));
+
+	set_visible(ppts, "preencode",
+		    vaapi_quality_preset_supported(profile, va_dpy));
 
 fail:
 	vaapi_close_device(&drm_fd, va_dpy);
@@ -1196,6 +1256,19 @@ static obs_properties_t *vaapi_properties_internal(enum codec_type codec)
 
 	p = obs_properties_add_int(props, "keyint_sec", obs_module_text("KeyframeIntervalSec"), 0, 20, 1);
 	obs_property_int_set_suffix(p, " s");
+
+	obs_properties_add_int(props, "bf", obs_module_text("BFrames"), 0, 4, 1);
+	p = obs_properties_add_list(props, "preset", obs_module_text("Preset"),
+				    OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_STRING);
+	if (codec == CODEC_AV1) {
+		obs_property_list_add_string(p, obs_module_text("AMF.Preset.highQuality"), "highQuality");
+	}
+	obs_property_list_add_string(p, obs_module_text("AMF.Preset.quality"), "quality");
+	obs_property_list_add_string(p, obs_module_text("AMF.Preset.balanced"), "balanced");
+	obs_property_list_add_string(p, obs_module_text("AMF.Preset.speed"), "speed");
+
+	obs_properties_add_bool(props, "preencode", obs_module_text("Pre-Encode"));
 
 	obs_properties_add_int(props, "bf", obs_module_text("BFrames"), 0, 4, 1);
 
