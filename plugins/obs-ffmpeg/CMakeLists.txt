@@ -112,9 +112,10 @@ elseif(OS_LINUX OR OS_FREEBSD)
 
   find_package(Libva REQUIRED)
   find_package(Libpci REQUIRED)
+  find_package(Vulkan REQUIRED)
 
   target_sources(obs-ffmpeg PRIVATE obs-ffmpeg-vaapi.c vaapi-utils.c vaapi-utils.h texture-amf.cpp)
-  target_link_libraries(obs-ffmpeg PRIVATE Libva::va Libva::drm Libpci::pci)
+  target_link_libraries(obs-ffmpeg PRIVATE Libva::va Libva::drm Libpci::pci Vulkan::Vulkan)
 endif()
 
 set_target_properties_obs(obs-ffmpeg PROPERTIES FOLDER plugins/obs-ffmpeg PREFIX "")
