@@ -706,8 +706,6 @@ static void apply_video_encoder_settings(obs_data_t *settings,
 		obs_data_set_int(settings, "keyint_sec", keyint);
 	}
 
-	obs_data_set_string(settings, "rate_control", "CBR");
-
 	item = json_object_get(recommended, "profile");
 	obs_data_item_t *enc_item = obs_data_item_byname(settings, "profile");
 	if (json_is_string(item) &&
