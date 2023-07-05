@@ -238,15 +238,16 @@ typedef struct {
 	bool qp;
 	bool bitrate;
 	bool maxrate;
+	bool bufsize;
 } rc_mode_t;
 
 static const rc_mode_t *get_rc_mode(const char *name)
 {
 	/* Set "allowed" options per Rate Control */
 	static const rc_mode_t RC_MODES[] = {
-		{.name = "CBR", .qp = false, .bitrate = true, .maxrate = false},
-		{.name = "CQP", .qp = true, .bitrate = false, .maxrate = false},
-		{.name = "VBR", .qp = false, .bitrate = true, .maxrate = true},
+		{.name = "CBR", .qp = false, .bitrate = true, .maxrate = false, .bufsize = true},
+		{.name = "CQP", .qp = true, .bitrate = false, .maxrate = false, .bufsize = false},
+		{.name = "VBR", .qp = false, .bitrate = true, .maxrate = true, .bufsize = true},
 		{0}};
 
 	const rc_mode_t *rc_mode = RC_MODES;
@@ -327,6 +328,9 @@ static bool vaapi_update(void *data, obs_data_t *settings)
 	int maxrate = rc_mode->maxrate
 			      ? (int)obs_data_get_int(settings, "maxrate")
 			      : 0;
+	int bufsize = rc_mode->bufsize
+			      ? (int)obs_data_get_int(settings, "bufsize")
+			      : 0;
 	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
 	const char *preset = obs_data_get_string(settings, "preset");
 	bool preencode = obs_data_get_bool(settings, "preencode");
@@ -365,8 +369,13 @@ static bool vaapi_update(void *data, obs_data_t *settings)
 	enc->context->level = level;
 	enc->context->bit_rate = bitrate * 1000;
 	enc->context->rc_max_rate = maxrate * 1000;
+	enc->context->rc_buffer_size = bufsize * 1000;
 	enc->context->rc_initial_buffer_occupancy =
 		(maxrate ? maxrate : bitrate) * 1000;
+
+	if (enc->context->rc_buffer_size <
+	    enc->context->rc_initial_buffer_occupancy)
+		enc->context->rc_buffer_size = 0;
 
 	enc->context->width = obs_encoder_get_width(enc->encoder);
 	enc->context->height = obs_encoder_get_height(enc->encoder);
@@ -462,14 +471,15 @@ static bool vaapi_update(void *data, obs_data_t *settings)
 	     "\tqp:           %d\n"
 	     "\tbitrate:      %d\n"
 	     "\tmaxrate:      %d\n"
+	     "\tbufsize:      %d\n"
 	     "\tkeyint:       %d\n"
 	     "\twidth:        %d\n"
 	     "\theight:       %d\n"
 	     "\tb-frames:     %d\n"
 	     "\tffmpeg opts:  %s\n",
 	     device, rate_control, profile, level, qp, bitrate, maxrate,
-	     enc->context->gop_size, enc->context->width, enc->context->height,
-	     enc->context->max_b_frames, ffmpeg_opts);
+	     bufsize, enc->context->gop_size, enc->context->width,
+	     enc->context->height, enc->context->max_b_frames, ffmpeg_opts);
 
 	return vaapi_init_codec(enc, device);
 }
@@ -1053,6 +1063,7 @@ static void vaapi_defaults_internal(obs_data_t *settings, enum codec_type codec)
 	obs_data_set_default_int(settings, "bf", 0);
 	obs_data_set_default_int(settings, "qp", 20);
 	obs_data_set_default_int(settings, "maxrate", 0);
+	obs_data_set_default_int(settings, "bufsize", 0);
 	obs_data_set_default_string(settings, "preset", "quality");
 	obs_data_set_default_bool(settings, "preencode", false);
 
@@ -1144,6 +1155,7 @@ static bool rate_control_modified(obs_properties_t *ppts, obs_property_t *p,
 	set_visible(ppts, "qp", rc_mode->qp);
 	set_visible(ppts, "bitrate", rc_mode->bitrate);
 	set_visible(ppts, "maxrate", rc_mode->maxrate);
+	set_visible(ppts, "bufsize", rc_mode->bufsize);
 
 	return true;
 }
@@ -1326,6 +1338,11 @@ static obs_properties_t *vaapi_properties_internal(enum codec_type codec)
 	p = obs_properties_add_int(
 		props, "maxrate", obs_module_text("MaxBitrate"), 0, 300000, 50);
 	obs_property_int_set_suffix(p, " Kbps");
+
+	p = obs_properties_add_int(props, "bufsize",
+				   obs_module_text("Buffer Size"), 0, 300000,
+				   50);
+	obs_property_int_set_suffix(p, " Kb");
 
 	obs_properties_add_int(props, "qp", "QP", 0, 51, 1);
 
